@@ -1,76 +1,90 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"femto-torrent/internal"
+	"femto-torrent/internal/torrent"
+
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/storage"
+	fynedialog "fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+	sqdialog "github.com/sqweek/dialog"
 )
 
 func main() {
-	a := app.New()
-	w := a.NewWindow("Femto Torrent")
+	app := internal.NewApp()
 
 	magnetInput := widget.NewEntry()
 	magnetInput.SetPlaceHolder("Paste magnet link...")
 
+	status := widget.NewLabel("Idling...")
+	torrentList := container.NewVBox(
+		widget.NewLabel("Ubuntu ISO"),
+		widget.NewProgressBar(),
+	)
+
 	addButton := widget.NewButton("Add", func() {
-		// add torrent
+		// TODO: Implement direct magnet string adding logic here
 	})
 
 	importButton := widget.NewButton("Import from file", func() {
-		filter := storage.NewExtensionFileFilter([]string{".torrent", ".magnet"})
-
-		dialog.ShowFileOpen(
-			func(uri fyne.URIReadCloser, err error) {
-				if err != nil || uri == nil {
-					return
-				}
-
-				println("Selected:", uri.URI().String())
-			},
-			w,
-		)
-
-		_ = filter
+		go handleFileImport(app.MainWindow, torrentList)
 	})
 
-	buttonRow := container.NewHBox(
-		addButton,
-		importButton,
-	)
+	buttonRow := container.NewHBox(addButton, importButton)
+	top := container.NewBorder(nil, nil, nil, buttonRow, magnetInput)
+	content := container.NewBorder(top, status, nil, nil, container.NewVScroll(torrentList))
 
-	top := container.NewBorder(
-		nil,
-		nil,
-		nil,
-		buttonRow,
-		magnetInput,
-	)
+	app.MainWindow.SetContent(content)
+	app.MainWindow.SetFixedSize(true)
+	app.MainWindow.Resize(fyne.NewSize(600, 400))
+	app.MainWindow.ShowAndRun()
+}
 
-	torrentList := container.NewVScroll(
-		container.NewVBox(
-			widget.NewLabel("Ubuntu ISO"),
-			widget.NewProgressBar(),
-		),
-	)
+func handleFileImport(w fyne.Window, torrentList *fyne.Container) {
+	filename, err := sqdialog.File().
+		Filter("Torrent files", "torrent", "magnet").
+		Load()
 
-	status := widget.NewLabel("Idling...")
+	if err != nil {
+		return
+	}
 
-	content := container.NewBorder(
-		top,
-		status,
-		nil,
-		nil,
-		torrentList,
-	)
+	switch filepath.Ext(filename) {
+	case ".torrent":
+		t, err := torrent.DecodeTorrent(filename)
+		if err != nil {
+			fynedialog.ShowError(err, w)
+			return
+		}
 
-	w.SetContent(content)
+		internal.ShowFileSelect(t, w, func(selected []internal.SelectedFile) {
+			torrentList.Add(widget.NewLabel(t.Info.Name))
+			torrentList.Add(widget.NewProgressBar())
+			torrentList.Refresh()
+		})
 
-	w.SetFixedSize(true)
+	case ".magnet":
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			fynedialog.ShowError(err, w)
+			return
+		}
 
-	w.Resize(fyne.NewSize(600, 400))
-	w.ShowAndRun()
+		m, err := torrent.DecodeMagnet(strings.TrimSpace(string(data)))
+		if err != nil {
+			fynedialog.ShowError(err, w)
+			return
+		}
+
+		fynedialog.ShowInformation("Magnet loaded!", "Name: "+m.Name, w)
+
+	default:
+		fynedialog.ShowError(errors.New("Unsupported file extension: "+filepath.Ext(filename)), w)
+	}
 }
